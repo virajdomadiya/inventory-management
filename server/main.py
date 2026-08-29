@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -13,6 +14,9 @@ QUARTER_MAP = {
     'Q3-2025': ['2025-07', '2025-08', '2025-09'],
     'Q4-2025': ['2025-10', '2025-11', '2025-12']
 }
+
+# Fixed lead time assumption for restocking orders (no real supplier data in this mock app)
+LEAD_TIME_DAYS = 14
 
 def filter_by_month(items: list, month: Optional[str]) -> list:
     """Filter items by month/quarter based on order_date field"""
@@ -80,6 +84,7 @@ class Order(BaseModel):
     actual_delivery: Optional[str] = None
     warehouse: Optional[str] = None
     category: Optional[str] = None
+    source: Optional[str] = None
 
 class DemandForecast(BaseModel):
     id: str
@@ -89,6 +94,7 @@ class DemandForecast(BaseModel):
     forecasted_demand: int
     trend: str
     period: str
+    unit_cost: Optional[float] = None
 
 class BacklogItem(BaseModel):
     id: str
@@ -119,6 +125,16 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockOrderItem(BaseModel):
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+
+class RestockOrderRequest(BaseModel):
+    budget: float
+    items: List[RestockOrderItem]
 
 # API endpoints
 @app.get("/")
@@ -160,6 +176,53 @@ def get_order(order_id: str):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+@app.post("/api/orders/restock", response_model=Order, status_code=201)
+def create_restock_order(request: RestockOrderRequest):
+    """Create a restocking order from budget-based demand-forecast recommendations"""
+    if not request.items:
+        raise HTTPException(status_code=400, detail="At least one item is required to place a restock order")
+
+    for item in request.items:
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity for {item.item_sku} must be greater than 0"
+            )
+
+    order_items = [
+        {
+            "sku": item.item_sku,
+            "name": item.item_name,
+            "quantity": item.quantity,
+            "unit_price": item.unit_cost
+        }
+        for item in request.items
+    ]
+    total_value = round(sum(item.quantity * item.unit_cost for item in request.items), 2)
+
+    now = datetime.now()
+    expected_delivery = now + timedelta(days=LEAD_TIME_DAYS)
+    next_id = str(max((int(o["id"]) for o in orders), default=0) + 1)
+    order_number = f"ORD-{now.year}-{len(orders) + 1:04d}"
+
+    new_order = {
+        "id": next_id,
+        "order_number": order_number,
+        "customer": "Internal Restocking",
+        "items": order_items,
+        "status": "Processing",
+        "order_date": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "expected_delivery": expected_delivery.strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_value": total_value,
+        "actual_delivery": None,
+        "warehouse": None,
+        "category": None,
+        "source": "restocking"
+    }
+
+    orders.append(new_order)
+    return new_order
 
 @app.get("/api/demand", response_model=List[DemandForecast])
 def get_demand_forecasts():

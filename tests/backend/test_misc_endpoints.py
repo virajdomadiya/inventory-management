@@ -83,6 +83,15 @@ class TestDemandEndpoints:
                 assert item["trend"].lower() == "stable", \
                     f"New item {item['item_name']} should have stable trend"
 
+    def test_demand_forecasts_have_unit_cost(self, client):
+        """Test that demand forecasts include a unit_cost for restocking calculations."""
+        response = client.get("/api/demand")
+        data = response.json()
+
+        for forecast in data:
+            assert "unit_cost" in forecast
+            assert forecast["unit_cost"] is None or forecast["unit_cost"] > 0
+
 
 class TestBacklogEndpoints:
     """Test suite for backlog endpoints."""
